@@ -66,6 +66,7 @@ struct EDBandData{F<:AbstractFloat}
     # scattering::Matrix{Bool}
     gpoints::Vector{Vector{Int8}}
     gindices::Dict{Vector{Int8},Int}
+    gindices_::Array{Int,2}
 end
 
 """
@@ -87,6 +88,7 @@ function EDBandData(
         length(m1.gpoints), 
         length(models), 
         length(lat.kpoints))
+
     for j in eachindex(lat.kpoints)
         for i in eachindex(models)
             res = eigen(hamiltonian(models[i], kpointat(lat, lat.kpoints[j])))
@@ -94,7 +96,13 @@ function EDBandData(
             states[:,:,i,j] = res.vectors[:,bands[i]]
         end
     end
-    EDBandData{F}(lat, energies, states, m1.gpoints, m1.gindices)
+
+    gindices_ = zeros(256, 256)
+    for (i, (gx, gy)) in pairs(m1.gpoints)
+        gindices_[gx+129,gy+129] = i
+    end
+
+    EDBandData{F}(lat, energies, states, m1.gpoints, m1.gindices, gindices_)
 end
 
 "Calculate the total momentum (in momentum lattice basis, in the primitive unit cell) of a configuration."
@@ -206,18 +214,29 @@ function formfactor(
     k2i::Int, alpha2::Int,
     g::Vector{Int8}
 )::Complex{F} where {F <: AbstractFloat}
-    ff::Complex{F} = 0
-    for bandi in size(bd.states)[3]
-        for gi in eachindex(bd.gpoints)
-            g_ = bd.gpoints[gi]
-            g1_ = g_ + g
-            if haskey(bd.gindices, g1_)
-                g1i = bd.gindices[g1_]
-                ff += dot(
-                    bd.states[:, g1i, alpha1, k1i], 
-                    bd.states[:, gi,  alpha2, k2i]
-                )
-            end
+    ff = zero(Complex{F})
+    # gx = g[1]
+    # gy = g[2]
+    # g1x = zero(Int8)
+    # g1y = zero(Int8)
+    # for bandi in 1:size(bd.states)[3]
+    #     for gi in eachindex
+    g1 = Vector{Int8}(undef, 2) # avoid reallocation
+    for gi in eachindex(bd.gpoints)
+        g1 .= bd.gpoints[gi] .+ g
+        # if haskey(bd.gindices, g1)
+        #     g1i = @inbounds bd.gindices[g1]
+        #     ff += dot(
+        #         @view(bd.states[:, g1i, alpha1, k1i]), 
+        #         @view(bd.states[:, gi,  alpha2, k2i])
+        #     )
+        # end
+        g1i = bd.gindices_[g1[1]+129, g1[2]+129]
+        if !iszero(g1i)
+            ff += dot(
+                @view(bd.states[:, g1i, alpha1, k1i]), 
+                @view(bd.states[:, gi,  alpha2, k2i])
+            )
         end
     end
 
@@ -363,7 +382,14 @@ function diagonalize(ctx::EDContext{F}, nvals::Integer; onthefly::Bool=false) wh
 end
 
 "Diagonalize in each momentum sector."
-function ed_run(bd::EDBandData{F}, scattering::Matrix{Bool}, nparticles::Vector{Int}, potential::V, nvals::Integer; onthefly::Bool=false) where {F,V}
+function ed_run(
+    bd::EDBandData{F}, 
+    scattering::Matrix{Bool}, 
+    nparticles::Vector{Int}, 
+    potential::V, 
+    nvals::Integer; 
+    onthefly::Bool=false
+) where {F,V}
     energies = Vector(undef, length(bd.lat.kpoints))
     for (i, totk) in pairs(bd.lat.kpoints)
         ctx = EDContext(bd, scattering, nparticles, totk, potential)
